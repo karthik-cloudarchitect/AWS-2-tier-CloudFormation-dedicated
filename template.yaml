@@ -1,0 +1,442 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Two-Tier Architecture with ALB, EC2, and RDS
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name
+  
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: EC2 instance type
+  
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: RDS instance class
+  
+  DBName:
+    Type: String
+    Default: webappdb
+    Description: Database name
+  
+  DBUsername:
+    Type: String
+    Default: admin
+    Description: Database master username
+  
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Database master password
+    MinLength: 8
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-vpc"
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-igw"
+
+  # Attach Internet Gateway to VPC
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # Public Subnets
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-public-subnet-1"
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-public-subnet-2"
+
+  # Private Subnets
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.3.0/24
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-private-subnet-1"
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.4.0/24
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-private-subnet-2"
+
+  # Route Table for Public Subnets
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-public-rt"
+
+  # Route for Internet Gateway
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Associate Public Subnets with Route Table
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Groups
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-alb-sg"
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 instances
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-ec2-sg"
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-rds-sg"
+
+  # RDS Subnet Group
+  RDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-rds-subnet-group"
+
+  # RDS Instance
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "${Environment}-webapp-db"
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: mysql
+      EngineVersion: 8.0.28
+      AllocatedStorage: 20
+      StorageType: gp2
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref RDSSubnetGroup
+      BackupRetentionPeriod: 7
+      MultiAZ: true
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-webapp-db"
+
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${Environment}-webapp-alb"
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-webapp-alb"
+
+  # ALB Target Group
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${Environment}-webapp-tg"
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  # ALB Listener
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # Launch Template
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${Environment}-webapp-lt"
+      LaunchTemplateData:
+        ImageId: ami-0c02fb55956c7d316  # Amazon Linux 2 AMI (us-east-1)
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref EC2SecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y python3 python3-pip mysql
+            pip3 install flask pymysql cryptography
+            
+            # Create application directory
+            mkdir -p /opt/webapp
+            cd /opt/webapp
+            
+            # Download application files (you would typically use S3 or CodeDeploy)
+            cat > app.py << 'EOF'
+            from flask import Flask, jsonify, request
+            import pymysql
+            import os
+            
+            app = Flask(__name__)
+            
+            # Database configuration
+            DB_HOST = os.environ.get('DB_HOST', 'localhost')
+            DB_USER = os.environ.get('DB_USER', 'admin')
+            DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
+            DB_NAME = os.environ.get('DB_NAME', 'webappdb')
+            
+            def get_db_connection():
+                return pymysql.connect(
+                    host=DB_HOST,
+                    user=DB_USER,
+                    password=DB_PASSWORD,
+                    database=DB_NAME,
+                    charset='utf8mb4',
+                    cursorclass=pymysql.cursors.DictCursor
+                )
+            
+            @app.route('/')
+            def home():
+                return jsonify({
+                    'message': 'Welcome to Two-Tier Web Application',
+                    'status': 'healthy',
+                    'instance_id': os.environ.get('INSTANCE_ID', 'unknown')
+                })
+            
+            @app.route('/health')
+            def health():
+                try:
+                    conn = get_db_connection()
+                    conn.close()
+                    return jsonify({'status': 'healthy', 'database': 'connected'})
+                except Exception as e:
+                    return jsonify({'status': 'unhealthy', 'database': str(e)}), 500
+            
+            @app.route('/users', methods=['GET'])
+            def get_users():
+                try:
+                    conn = get_db_connection()
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT * FROM users")
+                        users = cursor.fetchall()
+                    conn.close()
+                    return jsonify(users)
+                except Exception as e:
+                    return jsonify({'error': str(e)}), 500
+            
+            @app.route('/users', methods=['POST'])
+            def create_user():
+                try:
+                    data = request.get_json()
+                    name = data.get('name')
+                    email = data.get('email')
+                    
+                    conn = get_db_connection()
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "INSERT INTO users (name, email) VALUES (%s, %s)",
+                            (name, email)
+                        )
+                    conn.commit()
+                    conn.close()
+                    
+                    return jsonify({'message': 'User created successfully'}), 201
+                except Exception as e:
+                    return jsonify({'error': str(e)}), 500
+            
+            if __name__ == '__main__':
+                app.run(host='0.0.0.0', port=80)
+            EOF
+            
+            # Create systemd service
+            cat > /etc/systemd/system/webapp.service << EOF
+            [Unit]
+            Description=Web Application
+            After=network.target
+            
+            [Service]
+            Type=simple
+            User=root
+            WorkingDirectory=/opt/webapp
+            Environment=DB_HOST=${RDSInstance.Endpoint.Address}
+            Environment=DB_USER=${DBUsername}
+            Environment=DB_PASSWORD=${DBPassword}
+            Environment=DB_NAME=${DBName}
+            Environment=INSTANCE_ID=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            ExecStart=/usr/bin/python3 app.py
+            Restart=always
+            
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            
+            # Start the service
+            systemctl enable webapp
+            systemctl start webapp
+
+  # Auto Scaling Group
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "${Environment}-webapp-asg"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: 2
+      MaxSize: 4
+      DesiredCapacity: 2
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-webapp-instance"
+          PropagateAtLaunch: true
+
+  # Auto Scaling Policy
+  AutoScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyName: !Sub "${Environment}-webapp-scaling-policy"
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 70.0
+
+Outputs:
+  ALBDNSName:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub "${AWS::StackName}-alb-dns"
+
+  RDSEndpoint:
+    Description: RDS instance endpoint
+    Value: !GetAtt RDSInstance.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-rds-endpoint"
+
+  RDSPort:
+    Description: RDS instance port
+    Value: !GetAtt RDSInstance.Endpoint.Port
+    Export:
+      Name: !Sub "${AWS::StackName}-rds-port" 
