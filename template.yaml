@@ -1,5 +1,26 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Two-Tier Architecture with ALB, EC2, and RDS
+Description: |
+  Two-Tier Architecture with ALB, EC2, and RDS
+  
+  This CloudFormation template deploys a complete 2-tier web application architecture:
+  
+  Tier 1 (Presentation Layer):
+  - Application Load Balancer (ALB) for high availability
+  - Auto Scaling Group with EC2 instances
+  - Security groups for web traffic
+  
+  Tier 2 (Data Layer):
+  - RDS MySQL database with Multi-AZ deployment
+  - Database subnet group in private subnets
+  - Security groups for database access
+  
+  Infrastructure Features:
+  - VPC with public and private subnets
+  - NAT Gateway for outbound internet access
+  - CloudWatch monitoring and logging
+  - Parameter-driven configuration for flexibility
+  
+  Best for: Web applications, APIs, and microservices requiring database persistence
 
 Parameters:
   Environment:
